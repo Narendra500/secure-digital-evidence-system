@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+
+  postgres:
+    image: postgres:15
+    container_name: evidence_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: evidence_user
+      POSTGRES_PASSWORD: evidence_pass
+      POSTGRES_DB: evidence_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  auth-service:
+    build: ../services/auth-service
+    ports:
+      - "4001:4001"
+    depends_on:
+      - postgres
+
+  case-service:
+    build: ../services/case-service
+    ports:
+      - "4002:4002"
+    depends_on:
+      - postgres
+
+  evidence-service:
+    build: ../services/evidence-service
+    ports:
+      - "4003:4003"
+    depends_on:
+      - postgres
+
+  audit-service:
+    build: ../services/audit-service
+    ports:
+      - "4004:4004"
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:
