@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:18.2-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: evidence_user
+      POSTGRES_PASSWORD: evidence_pass
+      POSTGRES_DB: evidence_db
+    volumes:
+      - pgdata:/var/lib/postgresql
+    ports:
+      - 5432:5432
+    networks:
+      - sdes_network
+  auth-service-go:
+    build: .
+    ports:
+      - 3001:3001
+    depends_on:
+      - db
+    volumes:
+      - ./:/app
+    environment:
+      DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable"
+    networks:
+      - sdes_network
+volumes:
+  pgdata:
+    external: true
+networks:
+  sdes_network:
+    driver: bridge
