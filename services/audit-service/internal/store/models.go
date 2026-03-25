@@ -8,18 +8,18 @@ type EvidenceDetails struct {
 }
 
 type EvidenceRegistrationDetails struct {
-	EvidenceID       int64
-	EvidencePublicID string
-	Algorithm        string
-	FileHash         string
-	CaseID           int64
-	UserID           int64
-	ActionType       int32
-	Remarks          string
+	EvidenceID       int64  `json:"evidence_id" binding:"required"`
+	EvidencePublicID string `json:"evidence_public_id" binding:"required"`
+	Algorithm        string `json:"algorithm" binding:"required"`
+	FileHash         string `json:"file_hash" binding:"required"`
+	CaseID           int64  `json:"case_id" binding:"required"`
+	UserID           int64  `json:"user_id" binding:"required"`
+	ActionType       int32  `json:"action_type" binding:"required"`
+	Remarks          string `json:"remarks" binding:"required"`
 	// jsonb data
-	ActionMetadata string
-	ServiceName    string
-	IPAddress      string
+	ActionMetadata string `json:"action_metadata" binding:"required"`
+	ServiceName    string `json:"service_name" binding:"required"`
+	IPAddress      string `json:"ip_address" binding:"required"`
 }
 
 type CustodyLog struct {

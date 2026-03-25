@@ -2,8 +2,11 @@ package main
 
 import (
 	"audit-service/internal/config"
+	"audit-service/internal/handler"
+	"audit-service/internal/repository"
 	"audit-service/internal/service"
 	"audit-service/internal/store"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -24,23 +27,42 @@ func main() {
 		port = "3001"
 	}
 
+	// Initialize the database configuration.
 	config := config.NewEnvDBConfig(5, 5, time.Duration(30*time.Minute))
 
 	runMigrations(config)
 
-	store, err := store.NewStorage(config, false)
+	// Initial context acting as top level context for incoming requests.
+	ctx := context.Background()
+
+	// Initialize the storage layer.
+	store, err := store.NewStorage(config, true, ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer store.Close()
+
+	// Initialize the repositories.
+	evidenceRepo := repository.NewEvidenceRepo(store)
+	custodyRepo := repository.NewCustodyRepo(store)
+	auditRepo := repository.NewAuditRepo(store)
+
+	// Initialize the services.
+	registrationService := service.NewEvidenceRegistrationWorkflow(store, evidenceRepo, custodyRepo, auditRepo)
+
+	// Initialze the handler.
+	handler := handler.NewHandler(registrationService)
 
 	router := gin.Default()
 
-	router.POST("/api/v1/evidence/register")
+	// Routes.
+	router.POST("/api/v1/evidence/register", handler.RegisterEvidence)
 
 	log.Printf("Service running on : %s\n", port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf("0.0.0.0:%s", port), router))
 }
 
+// Run the latest db migrations.
 func runMigrations(config *config.EnvDBConfig) error {
 	m, err := migrate.New(
 		"file://./migrations",

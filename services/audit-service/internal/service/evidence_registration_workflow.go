@@ -13,11 +13,7 @@ type EvidenceRegistrationWorkflow struct {
 	auditRepo    repository.AuditRepo
 }
 
-func NewEvidenceRegistrationWorkflow(store *store.Storage) *EvidenceRegistrationWorkflow {
-	evidenceRepo := repository.NewEvidenceRepo(store)
-	custodyRepo := repository.NewCustodyRepo(store)
-	auditRepo := repository.NewAuditRepo(store)
-
+func NewEvidenceRegistrationWorkflow(store *store.Storage, evidenceRepo repository.EvidenceRepo, custodyRepo repository.CustodyRepo, auditRepo repository.AuditRepo) *EvidenceRegistrationWorkflow {
 	return &EvidenceRegistrationWorkflow{store, evidenceRepo, custodyRepo, auditRepo}
 }
 

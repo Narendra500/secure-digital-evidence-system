@@ -16,7 +16,7 @@ type Storage struct {
 	Pool *pgxpool.Pool
 }
 
-func NewStorage(config *config.EnvDBConfig, setLimits bool) (*Storage, error) {
+func NewStorage(config *config.EnvDBConfig, setLimits bool, ctx context.Context) (*Storage, error) {
 	connStr := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
 		config.GetHost(),
 		config.GetPort(),
@@ -42,7 +42,7 @@ func NewStorage(config *config.EnvDBConfig, setLimits bool) (*Storage, error) {
 		poolConfig.MaxConnIdleTime = maxConnIdleTime
 	}
 
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return nil, fmt.Errorf("error: failed to create pool, %w", err)
 	}
@@ -50,7 +50,7 @@ func NewStorage(config *config.EnvDBConfig, setLimits bool) (*Storage, error) {
 	var pingErr error
 	// Start loop to keep try to connect to db with a timeout.
 	for i := range tries {
-		pingErr = pool.Ping(context.Background())
+		pingErr = pool.Ping(ctx)
 		// db connection good.
 		if pingErr == nil {
 			return &Storage{pool}, nil
@@ -63,6 +63,19 @@ func NewStorage(config *config.EnvDBConfig, setLimits bool) (*Storage, error) {
 	// Clean up the pool if we completely failed to connect.
 	pool.Close()
 	return nil, fmt.Errorf("could not connect to database after %d retires: %v", tries, pingErr)
+}
+
+func (t *Storage) Close() {
+	t.Pool.Close()
+}
+
+func (t *Storage) HealthCheck() error {
+	ctx := context.Background()
+	err := t.Pool.Ping(ctx)
+	if err != nil {
+		return fmt.Errorf("error: failed to ping db, %w", err)
+	}
+	return nil
 }
 
 // PgxQuerier defines the standard database operations.
