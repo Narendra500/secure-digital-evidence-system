@@ -1,4 +1,4 @@
-const { pool } = require("./config/db.js");
+import pool from "./config/db.js";
 
 const test = async () => {
   const res = await pool.query("SELECT NOW()");

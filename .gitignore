@@ -140,3 +140,8 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Project wide test files
+test_evidence.txt
+raw_binary_stream.bin
+s3_download_test.txt
