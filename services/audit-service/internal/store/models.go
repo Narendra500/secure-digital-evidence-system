@@ -22,9 +22,9 @@ type EvidenceRegistrationDetails struct {
 	ActionType       int32  `json:"action_type" binding:"required"`
 	Remarks          string `json:"remarks" binding:"required"`
 	// jsonb data
-	ActionMetadata string `json:"action_metadata" binding:"required"`
-	ServiceName    string `json:"service_name" binding:"required"`
-	IPAddress      string `json:"ip_address" binding:"required"`
+	ActionMetadata map[string]interface{} `json:"action_metadata" binding:"required"`
+	ServiceName    string                 `json:"service_name" binding:"required"`
+	IPAddress      string                 `json:"ip_address" binding:"required"`
 }
 
 type CustodyLog struct {
