@@ -39,16 +39,49 @@ services:
       DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=auth_schema"
     networks:
       - sdes_network
+  nats:
+    image: nats:2.10-alpine
+    container_name: sdes_nats
+    restart: unless-stopped
+    command: ["-js"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - sdes_network
   audit-service-go:
-    build: ./services/audit-service/
+    build:
+      context: ./services/audit-service/
+      network: host
     container_name: sdes_audit
     restart: unless-stopped
     depends_on:
       - db
+      - nats
     volumes:
       - ./services/audit-service/:/app
     environment:
       DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=integrity_schema"
+      NATS_URL: "nats://nats:4222"
+    networks:
+      - sdes_network
+  audit-worker-go:
+    build:
+      context: ./services/audit-worker/
+      network: host
+    container_name: sdes_audit_worker
+    restart: unless-stopped
+    depends_on:
+      - db
+      - nats
+    volumes:
+      - ./services/audit-worker/:/app
+    environment:
+      DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=integrity_schema"
+      NATS_URL: "nats://nats:4222"
+      REKOR_URL: "https://rekor.sigstore.dev"
+      BATCH_SIZE: "100"
+      BATCH_INTERVAL_MINUTES: "20"
     networks:
       - sdes_network
   case-service:

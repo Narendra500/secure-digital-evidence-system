@@ -48,15 +48,15 @@ export function Audit() {
             const ip = (log.ip_address || '').toLowerCase();
 
             const match = evName.includes(term) ||
-                          caseTitle.includes(term) ||
-                          userName.includes(term) ||
-                          serviceName.includes(term) ||
-                          evId.includes(term) ||
-                          currentHash.includes(term) ||
-                          prevHash.includes(term) ||
-                          publicId.includes(term) ||
-                          reqId.includes(term) ||
-                          ip.includes(term);
+                caseTitle.includes(term) ||
+                userName.includes(term) ||
+                serviceName.includes(term) ||
+                evId.includes(term) ||
+                currentHash.includes(term) ||
+                prevHash.includes(term) ||
+                publicId.includes(term) ||
+                reqId.includes(term) ||
+                ip.includes(term);
             if (!match) return false;
         }
         return true;
@@ -70,8 +70,8 @@ export function Audit() {
         <div className="animate-slide">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
                 <div>
-                    <div className="page-title">Immutable Audit Log</div>
-                    <div className="page-sub">Cryptographically chained verification events & immutable audit trail</div>
+                    <div className="page-title">Audit Log</div>
+                    <div className="page-sub">Cryptographically chained verification events & audit trail</div>
                 </div>
                 <button className="btn" onClick={fetchLogs} disabled={loading} style={{ fontSize: 10, padding: '6px 14px' }}>
                     {loading ? 'Refreshing...' : 'Refresh Logs'}
@@ -161,7 +161,7 @@ export function Audit() {
 
             {/* Audit Logs Table */}
             <div className="card">
-                <SectionTitle>Immutable Audit Chain ({filteredLogs.length} Records)</SectionTitle>
+                <SectionTitle>Audit Chain ({filteredLogs.length} Records)</SectionTitle>
 
                 {loading && <div style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--ink3)', padding: 24, textAlign: 'center' }}>VERIFYING LEDGER INTEGRITY & LOADING AUDIT LOGS...</div>}
 

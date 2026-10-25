@@ -68,6 +68,20 @@ type CustodyLogDTO struct {
 	Timestamp        time.Time      `json:"timestamp"`
 }
 
+type AuditEventMessage struct {
+	UserID      int64     `json:"user_id"`
+	CaseID      int64     `json:"case_id"`
+	EvidenceID  int64     `json:"evidence_id"`
+	ActionType  int32     `json:"action_type"`
+	ActionName  string    `json:"action_name"`
+	ServiceName string    `json:"service_name"`
+	IPAddress   string    `json:"ip_address"`
+	RequestID   string    `json:"request_id"`
+	Status      string    `json:"status"`
+	Details     string    `json:"details"`
+	Timestamp   time.Time `json:"timestamp"`
+}
+
 type AuditLog struct {
 	UserID      int64
 	CaseID      int64
@@ -135,6 +149,23 @@ func (d *EvidenceRegistrationDetails) ToAuditLog(actionID int32) AuditLog {
 		ServiceName: d.ServiceName,
 		IPAddress:   d.IPAddress,
 		RequestID:   requestID,
+	}
+}
+
+func (d *EvidenceRegistrationDetails) ToAuditEventMessage(actionID int32) AuditEventMessage {
+	requestID := GenerateRequestID(d.EvidenceID, d.FileHash, actionID, d.UserID, d.CaseID)
+	return AuditEventMessage{
+		UserID:      d.UserID,
+		CaseID:      d.CaseID,
+		EvidenceID:  d.EvidenceID,
+		ActionType:  actionID,
+		ActionName:  d.Action,
+		ServiceName: d.ServiceName,
+		IPAddress:   d.IPAddress,
+		RequestID:   requestID,
+		Status:      "unchanged",
+		Details:     d.ActionMetadata,
+		Timestamp:   time.Now().UTC(),
 	}
 }
 

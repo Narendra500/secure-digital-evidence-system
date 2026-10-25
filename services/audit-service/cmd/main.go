@@ -3,6 +3,7 @@ package main
 import (
 	"audit-service/internal/config"
 	"audit-service/internal/handler"
+	"audit-service/internal/queue"
 	"audit-service/internal/repository"
 	"audit-service/internal/service"
 	"audit-service/internal/store"
@@ -42,6 +43,15 @@ func main() {
 	}
 	defer store.Close()
 
+	// Initialize NATS Publisher
+	natsURL := os.Getenv("NATS_URL")
+	publisher, err := queue.NewNATSPublisher(natsURL)
+	if err != nil {
+		log.Printf("Warning: failed to initialize NATS publisher: %v. Standalone mode fallback enabled.", err)
+	} else {
+		defer publisher.Close()
+	}
+
 	// Initialize the repositories.
 	evidenceRepo := repository.NewEvidenceRepo(store)
 	custodyRepo := repository.NewCustodyRepo(store)
@@ -49,8 +59,8 @@ func main() {
 	actionRepo := repository.NewActionRepo(store)
 
 	// Initialize the services.
-	registrationService := service.NewEvidenceRegistrationWorkflow(store, evidenceRepo, custodyRepo, auditRepo, actionRepo)
-	evidenceService := service.NewEvidenceService(evidenceRepo, auditRepo, actionRepo, nil)
+	registrationService := service.NewEvidenceRegistrationWorkflow(store, evidenceRepo, custodyRepo, auditRepo, actionRepo, publisher)
+	evidenceService := service.NewEvidenceService(evidenceRepo, auditRepo, actionRepo, nil, publisher)
 	custodyService := service.NewCustodyService(custodyRepo)
 	auditService := service.NewAuditService(auditRepo)
 

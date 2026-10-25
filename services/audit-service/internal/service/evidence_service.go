@@ -2,6 +2,7 @@ package service
 
 import (
 	"audit-service/internal/cerrors"
+	"audit-service/internal/queue"
 	"audit-service/internal/repository"
 	"audit-service/internal/store"
 	"context"
@@ -25,6 +26,7 @@ type evidenceService struct {
 	auditRepo    repository.AuditRepo
 	actionRepo   repository.ActionRepo
 	fileFetcher  FileFetcher
+	publisher    queue.Publisher
 }
 
 func NewEvidenceService(
@@ -32,6 +34,7 @@ func NewEvidenceService(
 	auditRepo repository.AuditRepo,
 	actionRepo repository.ActionRepo,
 	fileFetcher FileFetcher,
+	publisher queue.Publisher,
 ) EvidenceService {
 	if fileFetcher == nil {
 		fileFetcher = NewFileFetcher("", nil)
@@ -41,6 +44,7 @@ func NewEvidenceService(
 		auditRepo:    auditRepo,
 		actionRepo:   actionRepo,
 		fileFetcher:  fileFetcher,
+		publisher:    publisher,
 	}
 }
 
@@ -164,20 +168,39 @@ func (e *evidenceService) VerifyEvidence(ctx context.Context, evidenceID string,
 
 		requestID := store.GenerateRequestID(evidenceHash.EvidenceID, computedHash, actionID, userID, caseID)
 
-		auditLog := store.AuditLog{
+		auditEvent := store.AuditEventMessage{
 			UserID:      userID,
 			CaseID:      caseID,
-			EvidenceId:  evidenceHash.EvidenceID,
+			EvidenceID:  evidenceHash.EvidenceID,
 			ActionType:  actionID,
+			ActionName:  "VERIFY",
 			ServiceName: "audit-service",
 			IPAddress:   clientIP,
 			RequestID:   requestID,
 			Status:      logStatus,
 			Details:     string(detailsBytes),
+			Timestamp:   time.Now().UTC(),
 		}
 
-		if err := e.auditRepo.InsertAuditLog(ctx, auditLog); err != nil {
-			log.Printf("warning: failed to insert verify audit log: %v", err)
+		if e.publisher != nil {
+			if err := e.publisher.PublishAuditEvent(ctx, auditEvent); err != nil {
+				log.Printf("warning: failed to publish verify audit event: %v", err)
+			}
+		} else if e.auditRepo != nil {
+			auditLog := store.AuditLog{
+				UserID:      userID,
+				CaseID:      caseID,
+				EvidenceId:  evidenceHash.EvidenceID,
+				ActionType:  actionID,
+				ServiceName: "audit-service",
+				IPAddress:   clientIP,
+				RequestID:   requestID,
+				Status:      logStatus,
+				Details:     string(detailsBytes),
+			}
+			if err := e.auditRepo.InsertAuditLog(ctx, auditLog); err != nil {
+				log.Printf("warning: failed to insert verify audit log: %v", err)
+			}
 		}
 	}
 

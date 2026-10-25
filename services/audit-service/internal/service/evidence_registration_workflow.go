@@ -1,9 +1,11 @@
 package service
 
 import (
+	"audit-service/internal/queue"
 	"audit-service/internal/repository"
 	"audit-service/internal/store"
 	"context"
+	"log"
 )
 
 type EvidenceRegistrationWorkflow struct {
@@ -12,6 +14,7 @@ type EvidenceRegistrationWorkflow struct {
 	custodyRepo  repository.CustodyRepo
 	auditRepo    repository.AuditRepo
 	actionRepo   repository.ActionRepo
+	publisher    queue.Publisher
 }
 
 func NewEvidenceRegistrationWorkflow(
@@ -20,8 +23,9 @@ func NewEvidenceRegistrationWorkflow(
 	custodyRepo repository.CustodyRepo,
 	auditRepo repository.AuditRepo,
 	actionRepo repository.ActionRepo,
+	publisher queue.Publisher,
 ) *EvidenceRegistrationWorkflow {
-	return &EvidenceRegistrationWorkflow{store, evidenceRepo, custodyRepo, auditRepo, actionRepo}
+	return &EvidenceRegistrationWorkflow{store, evidenceRepo, custodyRepo, auditRepo, actionRepo, publisher}
 }
 
 func (ev *EvidenceRegistrationWorkflow) RegisterEvidence(ctx context.Context, evidence store.EvidenceRegistrationDetails) error {
@@ -47,8 +51,14 @@ func (ev *EvidenceRegistrationWorkflow) RegisterEvidence(ctx context.Context, ev
 			return err
 		}
 
-		if err := ev.auditRepo.InsertAuditLog(txCtx, evidence.ToAuditLog(actionID)); err != nil {
-			return err
+		if ev.publisher != nil {
+			if err := ev.publisher.PublishAuditEvent(txCtx, evidence.ToAuditEventMessage(actionID)); err != nil {
+				log.Printf("warning: failed to publish audit event: %v", err)
+			}
+		} else if ev.auditRepo != nil {
+			if err := ev.auditRepo.InsertAuditLog(txCtx, evidence.ToAuditLog(actionID)); err != nil {
+				return err
+			}
 		}
 
 		return nil // Everything commits successfully.
