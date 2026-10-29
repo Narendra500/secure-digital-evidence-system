@@ -19,6 +19,7 @@ type Handler struct {
 	evidenceService     service.EvidenceService
 	custodyService      service.CustodyService
 	auditService        service.AuditService
+	verifierService     service.LogVerifierService
 }
 
 func NewHandler(
@@ -26,12 +27,14 @@ func NewHandler(
 	evidenceService service.EvidenceService,
 	custodyService service.CustodyService,
 	auditService service.AuditService,
+	verifierService service.LogVerifierService,
 ) *Handler {
 	return &Handler{
 		registrationService: regisService,
 		evidenceService:     evidenceService,
 		custodyService:      custodyService,
 		auditService:        auditService,
+		verifierService:     verifierService,
 	}
 }
 
@@ -229,4 +232,61 @@ func (h *Handler) GetAuditLogByID(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, logEntry)
+}
+
+type VerifyLogsRequest struct {
+	Scope       string `json:"scope"`
+	ID          string `json:"id"`
+	AutoRestore *bool  `json:"auto_restore"`
+}
+
+// VerifyLogs verifies whether audit logs were modified at evidence, case, or org level.
+// Performs local hash-chain verification and authoritative S3 batch manifest cross-verification.
+// If modifications/tampering are detected and auto_restore is enabled, it automatically restores logs from S3.
+func (h *Handler) VerifyLogs(c *gin.Context) {
+	var req VerifyLogsRequest
+	_ = c.ShouldBindJSON(&req)
+
+	if req.Scope == "" {
+		req.Scope = c.Query("scope")
+	}
+	if req.ID == "" {
+		req.ID = c.Query("id")
+	}
+	autoRestore := true
+	if req.AutoRestore != nil {
+		autoRestore = *req.AutoRestore
+	} else if arStr := c.Query("auto_restore"); arStr != "" {
+		if ar, err := strconv.ParseBool(arStr); err == nil {
+			autoRestore = ar
+		}
+	}
+
+	if req.Scope == "" || req.ID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "scope ('evidence', 'case', or 'org') and id are required",
+		})
+		return
+	}
+
+	result, err := h.verifierService.VerifyLogs(c.Request.Context(), req.Scope, req.ID, autoRestore)
+	if err != nil {
+		log.Printf("Error verifying logs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, result)
+}
+
+// GetAlerts returns persisted integrity alerts and restoration history.
+func (h *Handler) GetAlerts(c *gin.Context) {
+	limit, offset := parsePagination(c)
+	alerts, err := h.verifierService.ListAlerts(c.Request.Context(), limit, offset)
+	if err != nil {
+		log.Printf("Error listing integrity alerts: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list integrity alerts"})
+		return
+	}
+	c.JSON(http.StatusOK, alerts)
 }

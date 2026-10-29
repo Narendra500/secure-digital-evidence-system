@@ -115,3 +115,107 @@ func (c *AuditClient) GetEvidenceStatus(ctx context.Context, evidenceIDs []int64
 
 	return evidenceStatuses, nil
 }
+
+// GetAuditLogs queries audit logs for a given case and/or evidence with pagination support
+func (c *AuditClient) GetAuditLogs(ctx context.Context, caseID string, evidenceID string) ([]models.ExportAuditLog, error) {
+	if c.BaseURL == "" {
+		return nil, fmt.Errorf("AUDIT_SERVICE_URL not configured")
+	}
+
+	var allLogs []models.ExportAuditLog
+	limit := 200
+	offset := 0
+
+	for {
+		reqURL := fmt.Sprintf("%s/api/v1/audit/audit-logs?limit=%d&offset=%d", c.BaseURL, limit, offset)
+		if caseID != "" {
+			reqURL += fmt.Sprintf("&case_id=%s", caseID)
+		}
+		if evidenceID != "" {
+			reqURL += fmt.Sprintf("&evidence_id=%s", evidenceID)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.Client.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("audit service returned status %d", resp.StatusCode)
+		}
+
+		var pageLogs []models.ExportAuditLog
+		err = json.NewDecoder(resp.Body).Decode(&pageLogs)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		allLogs = append(allLogs, pageLogs...)
+		if len(pageLogs) < limit {
+			break
+		}
+		offset += len(pageLogs)
+	}
+
+	return allLogs, nil
+}
+
+// GetCustodyLogs queries custody logs for a given case and/or evidence with pagination support
+func (c *AuditClient) GetCustodyLogs(ctx context.Context, caseID string, evidenceID string) ([]models.ExportCustodyLog, error) {
+	if c.BaseURL == "" {
+		return nil, fmt.Errorf("AUDIT_SERVICE_URL not configured")
+	}
+
+	var allLogs []models.ExportCustodyLog
+	limit := 200
+	offset := 0
+
+	for {
+		reqURL := fmt.Sprintf("%s/api/v1/audit/custody-logs?limit=%d&offset=%d", c.BaseURL, limit, offset)
+		if caseID != "" {
+			reqURL += fmt.Sprintf("&case_id=%s", caseID)
+		}
+		if evidenceID != "" {
+			reqURL += fmt.Sprintf("&evidence_id=%s", evidenceID)
+		}
+
+		httpReq, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.Client.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("audit service returned status %d", resp.StatusCode)
+		}
+
+		var pageLogs []models.ExportCustodyLog
+		err = json.NewDecoder(resp.Body).Decode(&pageLogs)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		allLogs = append(allLogs, pageLogs...)
+		if len(pageLogs) < limit {
+			break
+		}
+		offset += len(pageLogs)
+	}
+
+	return allLogs, nil
+}

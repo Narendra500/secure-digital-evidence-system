@@ -15,6 +15,8 @@ type Sequencer interface {
 	ProcessEvent(event models.AuditEventMessage) models.AuditLogRecord
 	GetChainTip() string
 	GetLatestHash(evidenceID int64) string
+	HasEvidence(evidenceID int64) bool
+	SetLatestHash(evidenceID int64, hash string)
 	InitializeState(initialEvidenceHashes map[int64]string, initialChainTip string)
 }
 
@@ -42,6 +44,9 @@ func (s *inMemorySequencer) InitializeState(initialEvidenceHashes map[int64]stri
 
 func cleanIP(ipStr string) string {
 	ipStr = strings.TrimSpace(ipStr)
+	if idx := strings.Index(ipStr, "/"); idx != -1 {
+		ipStr = ipStr[:idx]
+	}
 	if host, _, err := net.SplitHostPort(ipStr); err == nil {
 		return host
 	}
@@ -112,4 +117,17 @@ func (s *inMemorySequencer) GetLatestHash(evidenceID int64) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.lastHashByEvidence[evidenceID]
+}
+
+func (s *inMemorySequencer) HasEvidence(evidenceID int64) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, exists := s.lastHashByEvidence[evidenceID]
+	return exists
+}
+
+func (s *inMemorySequencer) SetLatestHash(evidenceID int64, hash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastHashByEvidence[evidenceID] = hash
 }

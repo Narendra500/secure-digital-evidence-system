@@ -43,7 +43,7 @@ services:
     image: nats:2.10-alpine
     container_name: sdes_nats
     restart: unless-stopped
-    command: ["-js"]
+    command: [ "-js" ]
     ports:
       - "4222:4222"
       - "8222:8222"
@@ -60,6 +60,7 @@ services:
       - nats
     volumes:
       - ./services/audit-service/:/app
+      - ./batches:/app/batches
     environment:
       DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=integrity_schema"
       NATS_URL: "nats://nats:4222"
@@ -76,6 +77,7 @@ services:
       - nats
     volumes:
       - ./services/audit-worker/:/app
+      - ./batches:/app/batches
     environment:
       DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=integrity_schema"
       NATS_URL: "nats://nats:4222"
@@ -96,15 +98,19 @@ services:
     networks:
       - sdes_network
   evidence-service-go:
-    build: ./services/evidence-service/
+    build:
+      context: ./services/evidence-service/
+      network: host
     container_name: sdes_evidence
     restart: unless-stopped
     depends_on:
       - db
     volumes:
       - ./services/evidence-service/:/app
+      - ./services/auth-service/private.pem:/app/private.pem:ro
     environment:
       DB_CONN_STR: "host=db port=5432 user=evidence_user password=evidence_pass dbname=evidence_db sslmode=disable search_path=evidence_schema"
+      SIGNING_KEY_PATH: "/app/private.pem"
     networks:
       - sdes_network
   db:

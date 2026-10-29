@@ -50,10 +50,17 @@ func main() {
 	// Initialize Audit Client
 	auditClient := services.NewAuditClient()
 
+	// Initialize Manifest Signer
+	signer, err := services.NewSigner("private.pem")
+	if err != nil {
+		log.Printf("Warning: failed to initialize manifest signer: %v", err)
+	}
+
 	h := &handler.EvidenceHandler{
 		Store:       db,
 		S3Client:    s3Client,
 		AuditClient: auditClient,
+		Signer:      signer,
 	}
 
 	router := mux.NewRouter()
@@ -68,6 +75,11 @@ func main() {
 	// List evidence by case_id query param
 	router.Handle("/api/v1/evidence",
 		middleware.JWTMiddleware(http.HandlerFunc(h.ListEvidence)),
+	).Methods("GET")
+
+	// Export all evidence for a case as a signed ZIP archive
+	router.Handle("/api/v1/evidence/case/{case_id}/export",
+		middleware.JWTMiddleware(http.HandlerFunc(h.ExportCaseEvidence)),
 	).Methods("GET")
 
 	// Raw binary stream from S3

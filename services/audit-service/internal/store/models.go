@@ -1,7 +1,7 @@
 package store
 
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"fmt"
 	"time"
 )
@@ -94,6 +94,25 @@ type AuditLog struct {
 	Details     string
 }
 
+type VerifiableAuditLog struct {
+	ID               int64     `json:"id"`
+	PublicID         string    `json:"public_id"`
+	EvidenceID       int64     `json:"evidence_id"`
+	EvidencePublicID string    `json:"evidence_public_id"`
+	CaseID           int64     `json:"case_id"`
+	UserID           int64     `json:"user_id"`
+	ActionType       int32     `json:"action_type"`
+	ActionName       string    `json:"action_name"`
+	ServiceName      string    `json:"service_name"`
+	IPAddress        string    `json:"ip_address"`
+	RequestID        string    `json:"request_id"`
+	PreviousHash     string    `json:"previous_hash"`
+	CurrentHash      string    `json:"current_hash"`
+	Status           string    `json:"status"`
+	Details          string    `json:"details"`
+	CreatedAt        time.Time `json:"created_at"`
+}
+
 type AuditLogDTO struct {
 	PublicID         string         `json:"public_id"`
 	EvidencePublicID string         `json:"evidence_public_id"`
@@ -116,15 +135,14 @@ type AuditLogDTO struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
-// GenerateRequestID generates a deterministic UUIDv5-style identifier for idempotent request tracking.
-func GenerateRequestID(evidenceID int64, fileHash string, actionID int32, userID int64, caseID int64) string {
-	data := fmt.Sprintf("%d:%s:%d:%d:%d", evidenceID, fileHash, actionID, userID, caseID)
-	hash := sha256.Sum256([]byte(data))
-	// Set RFC 4122 version 5 (bits 4-7 = 0101) and variant (bits 6-7 = 10)
-	hash[6] = (hash[6] & 0x0f) | 0x50
-	hash[8] = (hash[8] & 0x3f) | 0x80
+// GenerateRequestID generates a UUIDv4 identifier for request tracking.
+func GenerateRequestID(args ...any) string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // RFC 4122 version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%08x-%04x-%04x-%02x%02x-%012x",
-		hash[0:4], hash[4:6], hash[6:8], hash[8], hash[9], hash[10:16])
+		b[0:4], b[4:6], b[6:8], b[8], b[9], b[10:16])
 }
 
 func (d *EvidenceRegistrationDetails) ToCustodyLog(actionID int32) CustodyLog {
@@ -176,4 +194,71 @@ func (d *EvidenceRegistrationDetails) ToEvidenceDetails() EvidenceDetails {
 		Algorithm:        d.Algorithm,
 		FileHash:         d.FileHash,
 	}
+}
+
+type BatchAuditLogRecord struct {
+	UserID       int64     `json:"user_id"`
+	CaseID       int64     `json:"case_id"`
+	EvidenceID   int64     `json:"evidence_id"`
+	ActionType   int32     `json:"action_type"`
+	ActionName   string    `json:"action_name"`
+	ServiceName  string    `json:"service_name"`
+	IPAddress    string    `json:"ip_address"`
+	RequestID    string    `json:"request_id"`
+	PreviousHash string    `json:"previous_hash"`
+	CurrentHash  string    `json:"current_hash"`
+	Status       string    `json:"status"`
+	Details      string    `json:"details"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+type BatchManifest struct {
+	EpochID       int64                 `json:"epoch_id"`
+	EventCount    int                   `json:"event_count"`
+	MerkleRoot    string                `json:"merkle_root"`
+	ChainTip      string                `json:"chain_tip"`
+	RekorUUID     string                `json:"rekor_uuid,omitempty"`
+	RekorLogIndex int64                 `json:"rekor_log_index,omitempty"`
+	Timestamp     time.Time             `json:"timestamp"`
+	Events        []BatchAuditLogRecord `json:"events"`
+}
+
+type IntegrityAlert struct {
+	ID            int64          `json:"-" db:"id"`
+	PublicID      string         `json:"public_id" db:"public_id"`
+	Scope         string         `json:"scope" db:"scope"`
+	TargetID      string         `json:"target_id" db:"target_id"`
+	Status        string         `json:"status" db:"status"`
+	TamperedCount int            `json:"tampered_count" db:"tampered_count"`
+	RestoredCount int            `json:"restored_count" db:"restored_count"`
+	Details       map[string]any `json:"details" db:"details"`
+	CreatedAt     time.Time      `json:"created_at" db:"created_at"`
+}
+
+type LogVerificationIssue struct {
+	EvidenceID       int64  `json:"evidence_id"`
+	EvidencePublicID string `json:"evidence_public_id"`
+	LogID            int64  `json:"log_id,omitempty"`
+	RequestID        string `json:"request_id"`
+	IssueType        string `json:"issue_type"` // HASH_MISMATCH, CHAIN_BROKEN, S3_MANIFEST_DISCREPANCY, MISSING_ROW
+	ExpectedHash     string `json:"expected_hash,omitempty"`
+	ActualHash       string `json:"actual_hash,omitempty"`
+	Message          string `json:"message"`
+	Restored         bool   `json:"restored"`
+}
+
+type LogVerificationResult struct {
+	VerifiedAt       time.Time              `json:"verified_at"`
+	Scope            string                 `json:"scope"`
+	TargetID         string                 `json:"target_id"`
+	Status           string                 `json:"status"` // VALID, TAMPER_DETECTED, TAMPERED_AND_RESTORED
+	Modified         bool                   `json:"modified"`
+	Restored         bool                   `json:"restored"`
+	EvidencesChecked int                    `json:"evidences_checked"`
+	LogsChecked      int                    `json:"logs_checked"`
+	TamperedCount    int                    `json:"tampered_count"`
+	RestoredCount    int                    `json:"restored_count"`
+	Issues           []LogVerificationIssue `json:"issues"`
+	Alert            *IntegrityAlert        `json:"alert,omitempty"`
+	Message          string                 `json:"message"`
 }

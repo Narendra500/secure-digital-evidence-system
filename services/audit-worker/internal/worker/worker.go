@@ -25,12 +25,13 @@ type Worker struct {
 	js            nats.JetStreamContext
 	sub           *nats.Subscription
 	mu            sync.Mutex
-	buffer        []models.AuditLogRecord
-	bufferMsgs    []*nats.Msg
-	batchSize     int
-	batchInterval time.Duration
-	epochID       int64
-	stopChan      chan struct{}
+	buffer             []models.AuditLogRecord
+	bufferMsgs         []*nats.Msg
+	bufferedRequestIDs map[string]bool
+	batchSize          int
+	batchInterval      time.Duration
+	epochID            int64
+	stopChan           chan struct{}
 }
 
 func NewWorker(
@@ -51,15 +52,16 @@ func NewWorker(
 	}
 
 	return &Worker{
-		sequencer:     seq,
-		store:         storage,
-		s3Client:      s3Cli,
-		rekorClient:   rekorCli,
-		js:            js,
-		batchSize:     batchSize,
-		batchInterval: batchInterval,
-		epochID:       initialEpoch,
-		stopChan:      make(chan struct{}),
+		sequencer:          seq,
+		store:              storage,
+		s3Client:           s3Cli,
+		rekorClient:        rekorCli,
+		js:                 js,
+		batchSize:          batchSize,
+		batchInterval:      batchInterval,
+		epochID:            initialEpoch,
+		bufferedRequestIDs: make(map[string]bool),
+		stopChan:           make(chan struct{}),
 	}
 }
 
@@ -67,11 +69,23 @@ func (w *Worker) Start(ctx context.Context) error {
 	subject := "audit.events"
 	consumerName := "audit-worker-group"
 
+	// Check if durable consumer already exists with a different AckWait
+	ci, err := w.js.ConsumerInfo("AUDIT_STREAM", consumerName)
+	if err == nil && ci != nil && ci.Config.AckWait != 30*time.Minute {
+		log.Printf("Consumer %s has AckWait %v. Updating to 30m0s...", consumerName, ci.Config.AckWait)
+		cfg := ci.Config
+		cfg.AckWait = 30 * time.Minute
+		if _, updateErr := w.js.UpdateConsumer("AUDIT_STREAM", &cfg); updateErr != nil {
+			log.Printf("Warning: failed to update consumer, recreating: %v", updateErr)
+			_ = w.js.DeleteConsumer("AUDIT_STREAM", consumerName)
+		}
+	}
+
 	// Subscribe via JetStream push/pull consumer
 	sub, err := w.js.SubscribeSync(subject,
 		nats.Durable(consumerName),
 		nats.ManualAck(),
-		nats.AckWait(30*time.Second),
+		nats.AckWait(30*time.Minute),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to JetStream subject %s: %w", subject, err)
@@ -132,10 +146,34 @@ func (w *Worker) Start(ctx context.Context) error {
 				}
 
 				w.mu.Lock()
+				if event.RequestID != "" && w.bufferedRequestIDs[event.RequestID] {
+					log.Printf("Duplicate event %s for evidence %d already in buffer, tracking message for ack", event.RequestID, event.EvidenceID)
+					w.bufferMsgs = append(w.bufferMsgs, msg)
+					w.mu.Unlock()
+					continue
+				}
+
+				// If evidence is not in sequencer memory and we have prior epochs, query S3 batch manifests
+				if !w.sequencer.HasEvidence(event.EvidenceID) && w.epochID > 0 {
+					s3Hash, found, err := w.s3Client.FindLatestHashForEvidence(context.Background(), event.EvidenceID, w.epochID)
+					if err != nil {
+						log.Printf("Warning: error querying S3 for evidence %d: %v", event.EvidenceID, err)
+					}
+					if found {
+						log.Printf("Evidence %d not in memory: retrieved previous hash from S3: %s", event.EvidenceID, s3Hash)
+						w.sequencer.SetLatestHash(event.EvidenceID, s3Hash)
+					} else {
+						log.Printf("Evidence %d not in memory or S3 manifests (Genesis event)", event.EvidenceID)
+					}
+				}
+
 				// Process through in-memory sequencer (prevHash lookup from memory, never Postgres!)
 				record := w.sequencer.ProcessEvent(event)
 				w.buffer = append(w.buffer, record)
 				w.bufferMsgs = append(w.bufferMsgs, msg)
+				if event.RequestID != "" {
+					w.bufferedRequestIDs[event.RequestID] = true
+				}
 
 				log.Printf("Buffered event #%d for evidence %d, hash: %s", len(w.buffer), record.EvidenceID, record.CurrentHash)
 
@@ -158,8 +196,7 @@ func (w *Worker) flushBatchLocked(ctx context.Context) error {
 		return nil
 	}
 
-	w.epochID++
-	epoch := w.epochID
+	epoch := w.epochID + 1
 	count := len(w.buffer)
 
 	log.Printf("Starting flush for Epoch %d with %d events...", epoch, count)
@@ -245,9 +282,11 @@ func (w *Worker) flushBatchLocked(ctx context.Context) error {
 
 	log.Printf("Successfully completed and anchored Epoch %d (%d events, IDs %d-%d)", epoch, count, startID, endID)
 
+	w.epochID = epoch
 	// Clear buffer
 	w.buffer = nil
 	w.bufferMsgs = nil
+	w.bufferedRequestIDs = make(map[string]bool)
 
 	return nil
 }

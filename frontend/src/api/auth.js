@@ -272,6 +272,25 @@ export async function downloadEvidence(evidenceId) {
   return res.blob();
 }
 
+export async function exportCaseEvidenceZip(casePublicId) {
+  const token = localStorage.getItem("sdes_token");
+  const res = await fetch(`${EVIDENCE_BASE}/case/${casePublicId}/export`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let msg = "Export failed";
+    try {
+      const data = JSON.parse(text);
+      msg = data.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+  return res.blob();
+}
+
 export async function verifyEvidence(evidenceId) {
   return request(`${AUDIT_BASE}/evidence/${evidenceId}/verify`);
 }
@@ -306,6 +325,23 @@ export async function getAuditLogs(params = {}) {
 
 export async function getAuditLogById(id) {
   return request(`${AUDIT_BASE}/audit-logs/${id}`);
+}
+
+export async function verifyAuditLogs({ scope, id, autoRestore = true }) {
+  return request(`${AUDIT_BASE}/logs/verify`, {
+    method: "POST",
+    body: JSON.stringify({ scope, id, auto_restore: autoRestore }),
+  });
+}
+
+export async function getIntegrityAlerts(params = {}) {
+  const cleanParams = Object.fromEntries(
+    Object.entries(params).filter(
+      ([_, v]) => v !== undefined && v !== null && v !== "",
+    ),
+  );
+  const query = new URLSearchParams(cleanParams).toString();
+  return request(`${AUDIT_BASE}/alerts${query ? `?${query}` : ""}`);
 }
 
 export async function getUserDetails(userId) {

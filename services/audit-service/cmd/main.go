@@ -5,6 +5,7 @@ import (
 	"audit-service/internal/handler"
 	"audit-service/internal/queue"
 	"audit-service/internal/repository"
+	"audit-service/internal/s3"
 	"audit-service/internal/service"
 	"audit-service/internal/store"
 	"context"
@@ -58,14 +59,18 @@ func main() {
 	auditRepo := repository.NewAuditRepo(store)
 	actionRepo := repository.NewActionRepo(store)
 
+	// Initialize S3 batch manifest client
+	s3Client := s3.NewClient()
+
 	// Initialize the services.
 	registrationService := service.NewEvidenceRegistrationWorkflow(store, evidenceRepo, custodyRepo, auditRepo, actionRepo, publisher)
 	evidenceService := service.NewEvidenceService(evidenceRepo, auditRepo, actionRepo, nil, publisher)
 	custodyService := service.NewCustodyService(custodyRepo)
 	auditService := service.NewAuditService(auditRepo)
+	verifierService := service.NewLogVerifierService(auditRepo, s3Client)
 
 	// Initialize the handler.
-	handler := handler.NewHandler(registrationService, evidenceService, custodyService, auditService)
+	handler := handler.NewHandler(registrationService, evidenceService, custodyService, auditService, verifierService)
 
 	router := gin.Default()
 
@@ -83,6 +88,11 @@ func main() {
 	// Audit logs routes
 	router.GET("/api/v1/audit/audit-logs", handler.GetAuditLogs)
 	router.GET("/api/v1/audit/audit-logs/:id", handler.GetAuditLogByID)
+
+	// Multi-level log verification & automated restoration routes
+	router.POST("/api/v1/audit/logs/verify", handler.VerifyLogs)
+	router.GET("/api/v1/audit/logs/verify", handler.VerifyLogs)
+	router.GET("/api/v1/audit/alerts", handler.GetAlerts)
 
 	log.Printf("Service running on : %s\n", port)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf("0.0.0.0:%s", port), router))

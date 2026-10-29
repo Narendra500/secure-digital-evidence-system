@@ -112,6 +112,9 @@ func (s *Storage) InsertAuditLogs(ctx context.Context, records []models.AuditLog
 			previous_hash, current_hash, request_id, status, details, created_at
 		)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		ON CONFLICT (request_id) DO UPDATE SET
+			status = EXCLUDED.status,
+			details = EXCLUDED.details
 		RETURNING id
 	`
 

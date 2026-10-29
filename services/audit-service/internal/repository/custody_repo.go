@@ -91,7 +91,7 @@ func (c *custodyRepo) ListCustodyLogs(ctx context.Context, evidenceID string, ca
 		LEFT JOIN integrity_schema.actions a ON c.action_type = a.id
 		LEFT JOIN integrity_schema.evidence_hashes eh ON c.evidence_id = eh.evidence_id
 		WHERE (@evidenceID = '' OR eh.evidence_public_id::text = @evidenceID OR c.evidence_id::text = @evidenceID)
-		  AND (@caseID = '' OR c.case_id::text = @caseID)
+		  AND (@caseID = '' OR c.case_id::text = @caseID OR EXISTS (SELECT 1 FROM case_schema.cases cs WHERE cs.id = c.case_id AND cs.public_id::text = @caseID))
 		ORDER BY c.timestamp DESC
 		LIMIT @limit OFFSET @offset
 	`

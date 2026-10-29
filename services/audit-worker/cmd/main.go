@@ -83,6 +83,36 @@ func main() {
 	if err != nil {
 		log.Printf("Warning: could not load latest state from database: %v", err)
 	}
+
+	// Reconcile and recover state from immutable S3 batch manifests if epochs exist
+	if latestEpoch > 0 {
+		log.Printf("Reconciling state from S3 batch manifests up to epoch %d...", latestEpoch)
+		s3EvidenceHashes, s3ChainTip, err := s3Client.RecoverStateFromS3(context.Background(), latestEpoch)
+		if err != nil {
+			log.Printf("Warning: could not recover state from S3 manifests: %v", err)
+		} else {
+			// Compare and alert on discrepancies; S3 manifests take precedence as source of truth
+			for evID, dbHash := range evidenceHashes {
+				if s3Hash, ok := s3EvidenceHashes[evID]; ok {
+					if dbHash != s3Hash {
+						log.Printf("ALERT: Discrepancy detected for evidence %d! DB hash (%s) != S3 manifest hash (%s). Using S3 authoritative hash.",
+							evID, dbHash, s3Hash)
+					}
+				}
+			}
+			for evID, s3Hash := range s3EvidenceHashes {
+				evidenceHashes[evID] = s3Hash
+			}
+			if s3ChainTip != "" {
+				if chainTip != "" && chainTip != s3ChainTip {
+					log.Printf("ALERT: Global chain tip discrepancy! DB tip (%s) != S3 tip (%s). Using S3 authoritative tip.", chainTip, s3ChainTip)
+				}
+				chainTip = s3ChainTip
+			}
+			log.Printf("State successfully reconciled with S3: %d evidence streams tracked", len(evidenceHashes))
+		}
+	}
+
 	seq.InitializeState(evidenceHashes, chainTip)
 
 	// Configure batch parameters

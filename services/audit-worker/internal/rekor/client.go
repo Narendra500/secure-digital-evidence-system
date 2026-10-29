@@ -6,9 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -83,25 +80,16 @@ func (c *rekorClient) AnchorHash(ctx context.Context, hashHex string) (*RekorRes
 		return c.mockAnchor(hashHex), nil
 	}
 
-	// Sign the hash with the worker's key
+	// Sign the Merkle root hash directly (Rekor expects ASN.1 DER signature of raw hash bytes)
 	hashBytes, err := hex.DecodeString(hashHex)
 	if err != nil {
 		hashBytes = []byte(hashHex)
 	}
-	digest := sha256.Sum256(hashBytes)
 
-	r, s, err := ecdsa.Sign(rand.Reader, c.privateKey, digest[:])
+	sigBytes, err := ecdsa.SignASN1(rand.Reader, c.privateKey, hashBytes)
 	if err != nil {
 		log.Printf("warning: signing failed, falling back to mock anchor: %v", err)
 		return c.mockAnchor(hashHex), nil
-	}
-
-	// ASN.1 DER signature format required by Rekor
-	sigBytes, err := asn1.Marshal(struct {
-		R, S *big.Int
-	}{r, s})
-	if err != nil {
-		sigBytes = append(r.Bytes(), s.Bytes()...)
 	}
 	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
 

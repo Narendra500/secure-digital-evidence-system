@@ -91,3 +91,36 @@ func TestSequencerStateInitialization(t *testing.T) {
 		t.Fatalf("Expected initialized previous hash 'known-hash-for-50', got: %s", rec.PreviousHash)
 	}
 }
+
+func TestSequencerHasEvidenceAndSetLatestHash(t *testing.T) {
+	seq := NewSequencer()
+
+	if seq.HasEvidence(42) {
+		t.Fatalf("Expected HasEvidence(42) to be false initially")
+	}
+
+	seq.SetLatestHash(42, "hash-from-s3")
+
+	if !seq.HasEvidence(42) {
+		t.Fatalf("Expected HasEvidence(42) to be true after SetLatestHash")
+	}
+
+	if h := seq.GetLatestHash(42); h != "hash-from-s3" {
+		t.Fatalf("Expected GetLatestHash(42) to return 'hash-from-s3', got: %s", h)
+	}
+
+	// Next event for 42 should use the set hash as PreviousHash
+	ev := models.AuditEventMessage{
+		UserID:      1,
+		CaseID:      10,
+		EvidenceID:  42,
+		ActionType:  2,
+		ServiceName: "evidence-service",
+		IPAddress:   "127.0.0.1",
+	}
+
+	rec := seq.ProcessEvent(ev)
+	if rec.PreviousHash != "hash-from-s3" {
+		t.Fatalf("Expected PreviousHash to be 'hash-from-s3', got: %s", rec.PreviousHash)
+	}
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { getCaseUsers, getEvidence, uploadEvidence, downloadEvidence, verifyEvidence, revertEvidence, createCase, getOrgDepartments } from '../../api/auth';
+import { getCaseUsers, getEvidence, uploadEvidence, downloadEvidence, verifyEvidence, revertEvidence, exportCaseEvidenceZip, createCase, getOrgDepartments, verifyAuditLogs } from '../../api/auth';
 import { Row, Badge, Empty, SectionTitle, computeSHA256, formatFileSize, StatCard } from './AdminCommon';
 import { Field, ErrorBanner, SuccessBanner } from '../auth/FormParts';
 
@@ -18,6 +18,8 @@ export function EvidenceSection({ caseId }) {
     const [uploading, setUploading] = useState(false);
     const [verifying, setVerifying] = useState(null);
     const [reverting, setReverting] = useState(null);
+    const [exportingZip, setExportingZip] = useState(false);
+    const [verifyingLogs, setVerifyingLogs] = useState(false);
     const [evidence, setEvidence] = useState([]);
     const [loading, setLoading] = useState(true);
 
@@ -143,13 +145,78 @@ export function EvidenceSection({ caseId }) {
         }
     };
 
+    const handleExportZip = async () => {
+        if (!caseId || evidence.length === 0) return;
+        setExportingZip(true);
+        setError('');
+        try {
+            const blob = await exportCaseEvidenceZip(caseId);
+            const url = window.URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.setAttribute('download', `case_${caseId}_evidence.zip`);
+            document.body.appendChild(link);
+            link.click();
+            link.parentNode.removeChild(link);
+            window.URL.revokeObjectURL(url);
+            setSuccess('CASE EVIDENCE ZIP PACKAGE DOWNLOADED SUCCESSFULLY');
+        } catch (err) {
+            setError('EXPORT FAILED: ' + (err.message || '').toUpperCase());
+        } finally {
+            setExportingZip(false);
+        }
+    };
+
+    const handleVerifyCaseLogs = async () => {
+        if (!caseId) return;
+        setVerifyingLogs(true);
+        setError('');
+        try {
+            const res = await verifyAuditLogs({ scope: 'case', id: caseId, autoRestore: true });
+            if (res.status === 'VALID') {
+                setSuccess(`CASE LOG INTEGRITY VERIFIED: All ${res.logs_checked} audit log records match cryptographic chains and S3 manifests.`);
+            } else if (res.status === 'TAMPERED_AND_RESTORED') {
+                setSuccess(`TAMPERING DETECTED & REPAIRED: Restored ${res.restored_count} log records from authoritative S3 manifests.`);
+                loadEvidence();
+            } else {
+                setError(`INTEGRITY WARNING: ${res.tampered_count} log records showed tampering.`);
+            }
+        } catch (err) {
+            setError('VERIFICATION FAILED: ' + (err.message || '').toUpperCase());
+        } finally {
+            setVerifyingLogs(false);
+        }
+    };
+
     return (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 16, marginTop: 12 }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--ink3)' }}>
                         {evidence.length} EVIDENCE ITEM{evidence.length !== 1 ? 'S' : ''} FOR THIS CASE
                     </span>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button
+                            type="button"
+                            onClick={handleVerifyCaseLogs}
+                            disabled={verifyingLogs}
+                            className="btn btn-secondary btn-sm"
+                            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '4px 10px', cursor: 'pointer', color: '#00c878', borderColor: 'rgba(0,200,120,0.4)' }}
+                        >
+                            {verifyingLogs ? 'VERIFYING...' : '🛡️ VERIFY CASE LOGS'}
+                        </button>
+                        {evidence.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={handleExportZip}
+                                disabled={exportingZip}
+                                className="btn btn-secondary btn-sm"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}
+                            >
+                                {exportingZip ? 'EXPORTING...' : '📦 EXPORT ALL (.ZIP)'}
+                            </button>
+                        )}
+                    </div>
                 </div>
                 <div className="card" style={{ padding: 0, maxHeight: 400, overflowY: 'auto' }}>
                     {loading ? (

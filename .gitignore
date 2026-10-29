@@ -48,6 +48,7 @@ postgres*
 # Dependency directories
 node_modules/
 jspm_packages/
+vendor/
 
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/

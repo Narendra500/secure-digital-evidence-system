@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"evidence-service/internal/models"
 	"evidence-service/internal/services"
@@ -23,6 +25,7 @@ type EvidenceHandler struct {
 	Store       *store.Storage
 	S3Client    *services.S3Client
 	AuditClient *services.AuditClient
+	Signer      services.Signer
 }
 
 // CreateEvidence handles multipart file uploads to S3
@@ -634,4 +637,378 @@ func (h *EvidenceHandler) RevertEvidence(w http.ResponseWriter, r *http.Request)
 		"reverted_from": evidence.CurrentHash,
 		"size":          targetSize,
 	})
+}
+
+// ExportCaseEvidence packages all evidence for a case into a cryptographically signed ZIP archive
+func (h *EvidenceHandler) ExportCaseEvidence(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	claims, ok := ctx.Value("claims").(*models.Claims)
+	if !ok {
+		http.Error(w, `{"error":"failed to get claims from the token"}`, http.StatusInternalServerError)
+		return
+	}
+	userPublicID := claims.Subject
+
+	vars := mux.Vars(r)
+	casePublicID := vars["case_id"]
+	if casePublicID == "" {
+		casePublicID = r.URL.Query().Get("case_id")
+	}
+	if casePublicID == "" {
+		http.Error(w, `{"error":"case_id is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Extract token for inter-service calls
+	token := r.Header.Get("Authorization")
+	token = strings.TrimPrefix(token, "Bearer ")
+
+	// Validate case exists via case service
+	caseResp, err := services.ValidateCase(casePublicID, token)
+	if err != nil {
+		log.Printf("Case validation failed: %v", err)
+		http.Error(w, `{"error":"case not found or invalid"}`, http.StatusNotFound)
+		return
+	}
+
+	// Check access control
+	hasAccess, err := services.CheckUserCaseAccess(casePublicID, userPublicID, token)
+	if err != nil || !hasAccess {
+		http.Error(w, `{"error":"access denied: user not assigned to this case"}`, http.StatusForbidden)
+		return
+	}
+
+	// Fetch all evidence records for this case
+	var evidenceList []models.Evidence
+	err = h.Store.DB.Select(&evidenceList,
+		`SELECT e.id, e.public_id, c.public_id AS case_id, e.file_name, e.file_size,
+		        e.storage_path, e.current_hash, e.mime_type, e.uploaded_by, e.uploaded_at
+		 FROM evidence e
+		 JOIN case_schema.cases c ON c.id = e.case_id
+		 WHERE e.case_id = $1
+		 ORDER BY e.uploaded_at ASC`,
+		caseResp.ID,
+	)
+	if err != nil {
+		log.Printf("DB select error for export: %v", err)
+		http.Error(w, `{"error":"failed to fetch evidence for export"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare HTTP response headers for zip streaming
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"case_%s_evidence.zip\"", casePublicID))
+
+	zipWriter := zip.NewWriter(w)
+	defer zipWriter.Close()
+
+	// Track filename counts for collision avoidance
+	nameCount := make(map[string]int)
+	for _, ev := range evidenceList {
+		nameCount[ev.FileName]++
+	}
+
+	usedPaths := make(map[string]bool)
+	var manifestFiles []models.EvidenceManifestFile
+
+	// 1. Stream each evidence file into evidence/ in the ZIP
+	for _, ev := range evidenceList {
+		filename := ev.FileName
+		// Disambiguate if duplicate filename exists in case
+		if nameCount[ev.FileName] > 1 || usedPaths[filename] {
+			filename = fmt.Sprintf("%s_%s", ev.PublicID[:8], ev.FileName)
+		}
+		usedPaths[filename] = true
+		relPath := fmt.Sprintf("evidence/%s", filename)
+
+		body, err := h.S3Client.DownloadFile(ctx, ev.StoragePath)
+		if err != nil {
+			log.Printf("Failed to download evidence %s from S3: %v", ev.PublicID, err)
+			continue
+		}
+
+		entryWriter, err := zipWriter.Create(relPath)
+		if err != nil {
+			body.Close()
+			log.Printf("Failed to create zip entry for %s: %v", relPath, err)
+			continue
+		}
+
+		// Compute SHA-256 while streaming into the zip entry
+		hasher := sha256.New()
+		multiWriter := io.MultiWriter(entryWriter, hasher)
+		bytesCopied, err := io.Copy(multiWriter, body)
+		body.Close()
+		if err != nil {
+			log.Printf("Error streaming evidence %s into zip: %v", ev.PublicID, err)
+			continue
+		}
+
+		computedHash := hex.EncodeToString(hasher.Sum(nil))
+		isTampered := (computedHash != ev.CurrentHash)
+
+		manifestFiles = append(manifestFiles, models.EvidenceManifestFile{
+			EvidencePublicID: ev.PublicID,
+			FileName:         ev.FileName,
+			Path:             relPath,
+			FileSize:         bytesCopied,
+			SHA256:           computedHash,
+			RecordedHash:     ev.CurrentHash,
+			Tampered:         isTampered,
+			MimeType:         ev.MimeType,
+			UploadedAt:       ev.UploadedAt,
+		})
+	}
+
+	// 2. Fetch all logs for the evidences in this case and write logs.json
+	caseLogs := h.fetchCaseLogs(ctx, casePublicID, caseResp.ID, evidenceList, caseResp.Title)
+	logsJSON, err := json.MarshalIndent(caseLogs, "", "  ")
+	if err != nil {
+		log.Printf("Warning: failed to marshal case logs to JSON: %v", err)
+	} else {
+		logsEntry, err := zipWriter.Create("logs.json")
+		if err != nil {
+			log.Printf("Warning: failed to create logs.json entry in zip: %v", err)
+		} else {
+			logsHasher := sha256.New()
+			logsMultiWriter := io.MultiWriter(logsEntry, logsHasher)
+			bytesWritten, err := logsMultiWriter.Write(logsJSON)
+			if err != nil {
+				log.Printf("Warning: failed to write logs.json to zip: %v", err)
+			} else {
+				logsHash := hex.EncodeToString(logsHasher.Sum(nil))
+				manifestFiles = append(manifestFiles, models.EvidenceManifestFile{
+					FileName:     "logs.json",
+					Path:         "logs.json",
+					FileSize:     int64(bytesWritten),
+					SHA256:       logsHash,
+					RecordedHash: logsHash,
+					Tampered:     false,
+					MimeType:     "application/json",
+					UploadedAt:   time.Now().UTC(),
+				})
+			}
+		}
+	}
+
+	// 3. Build manifest.json
+	manifest := models.EvidenceManifest{
+		System:  "Secure Digital Evidence System (SDES)",
+		Version: "1.0",
+		Case: models.EvidenceManifestCase{
+			PublicID: casePublicID,
+			Title:    caseResp.Title,
+		},
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+		ExportedBy: models.EvidenceManifestExportedBy{
+			UserPublicID: userPublicID,
+		},
+		HashAlgorithm: "sha256",
+		LogsFile:      "logs.json",
+		FileCount:     len(manifestFiles),
+		Files:         manifestFiles,
+	}
+
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal manifest JSON: %v", err)
+		return
+	}
+
+	// 4. Cryptographically sign manifest.json
+	var signature []byte
+	if h.Signer != nil {
+		sig, err := h.Signer.Sign(manifestJSON)
+		if err != nil {
+			log.Printf("Warning: failed to sign manifest: %v", err)
+		} else {
+			signature = sig
+		}
+	}
+
+	// 5. Write manifest.json to zip root
+	manifestEntry, err := zipWriter.Create("manifest.json")
+	if err == nil {
+		_, _ = manifestEntry.Write(manifestJSON)
+	}
+
+	// 6. Write manifest.sig to zip root
+	if len(signature) > 0 {
+		sigEntry, err := zipWriter.Create("manifest.sig")
+		if err == nil {
+			_, _ = sigEntry.Write(signature)
+		}
+	}
+
+	log.Printf("Exported case %s with %d evidence files and logs.json into ZIP", casePublicID, len(manifestFiles))
+}
+
+func (h *EvidenceHandler) fetchCaseLogs(ctx context.Context, casePublicID string, caseInternalID int64, evidenceList []models.Evidence, caseTitle string) models.CaseLogsExport {
+	logsExport := models.CaseLogsExport{
+		System:           "Secure Digital Evidence System (SDES)",
+		CasePublicID:     casePublicID,
+		CaseTitle:        caseTitle,
+		ExportedAt:       time.Now().UTC().Format(time.RFC3339),
+		EvidenceCount:    len(evidenceList),
+		Evidences:        make([]models.EvidenceLogsItem, 0),
+		AllAuditLogs:     make([]models.ExportAuditLog, 0),
+		AllCustodyLogs:   make([]models.ExportCustodyLog, 0),
+	}
+
+	// 1. Fetch audit logs (via AuditClient or fallback to DB)
+	var auditLogs []models.ExportAuditLog
+	if h.AuditClient != nil {
+		logs, err := h.AuditClient.GetAuditLogs(ctx, casePublicID, "")
+		if err == nil {
+			auditLogs = logs
+		} else {
+			log.Printf("Warning: failed to fetch audit logs via AuditClient: %v. Falling back to DB.", err)
+		}
+	}
+
+	if len(auditLogs) == 0 && h.Store != nil && h.Store.DB != nil {
+		rows, err := h.Store.DB.QueryContext(ctx, `
+			SELECT 
+				al.public_id::text,
+				COALESCE(eh.evidence_public_id::text, ''),
+				COALESCE(al.request_id::text, ''),
+				COALESCE(al.previous_hash, ''),
+				al.current_hash,
+				COALESCE(a.name, 'UNKNOWN'),
+				al.service_name,
+				al.ip_address::text,
+				al.status::text,
+				COALESCE(al.details, '{}'::jsonb),
+				al.created_at
+			FROM integrity_schema.audit_logs al
+			LEFT JOIN integrity_schema.actions a ON al.action_type = a.id
+			LEFT JOIN integrity_schema.evidence_hashes eh ON al.evidence_id = eh.evidence_id
+			WHERE al.case_id = $1
+			ORDER BY al.created_at ASC
+		`, caseInternalID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var l models.ExportAuditLog
+				var detailsJSON []byte
+				if err := rows.Scan(
+					&l.PublicID,
+					&l.EvidencePublicID,
+					&l.RequestID,
+					&l.PreviousHash,
+					&l.CurrentHash,
+					&l.Action,
+					&l.ServiceName,
+					&l.IPAddress,
+					&l.Status,
+					&detailsJSON,
+					&l.CreatedAt,
+				); err == nil {
+					if len(detailsJSON) > 0 {
+						_ = json.Unmarshal(detailsJSON, &l.Details)
+						if fn, ok := l.Details["file_name"].(string); ok {
+							l.EvidenceName = fn
+						}
+					}
+					l.CasePublicID = casePublicID
+					l.CaseTitle = caseTitle
+					auditLogs = append(auditLogs, l)
+				}
+			}
+		}
+	}
+
+	// 2. Fetch custody logs (via AuditClient or fallback to DB)
+	var custodyLogs []models.ExportCustodyLog
+	if h.AuditClient != nil {
+		logs, err := h.AuditClient.GetCustodyLogs(ctx, casePublicID, "")
+		if err == nil {
+			custodyLogs = logs
+		} else {
+			log.Printf("Warning: failed to fetch custody logs via AuditClient: %v. Falling back to DB.", err)
+		}
+	}
+
+	if len(custodyLogs) == 0 && h.Store != nil && h.Store.DB != nil {
+		rows, err := h.Store.DB.QueryContext(ctx, `
+			SELECT 
+				c.public_id::text,
+				COALESCE(eh.evidence_public_id::text, ''),
+				COALESCE(a.name, 'UNKNOWN'),
+				COALESCE(c.action_metadata, '{}'::jsonb),
+				c.remarks,
+				c.timestamp
+			FROM integrity_schema.custody_logs c
+			LEFT JOIN integrity_schema.actions a ON c.action_type = a.id
+			LEFT JOIN integrity_schema.evidence_hashes eh ON c.evidence_id = eh.evidence_id
+			WHERE c.case_id = $1
+			ORDER BY c.timestamp ASC
+		`, caseInternalID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var l models.ExportCustodyLog
+				var metaJSON []byte
+				if err := rows.Scan(
+					&l.PublicID,
+					&l.EvidencePublicID,
+					&l.Action,
+					&metaJSON,
+					&l.Remarks,
+					&l.Timestamp,
+				); err == nil {
+					if len(metaJSON) > 0 {
+						_ = json.Unmarshal(metaJSON, &l.ActionMetadata)
+						if fn, ok := l.ActionMetadata["file_name"].(string); ok {
+							l.EvidenceName = fn
+						}
+					}
+					l.CasePublicID = casePublicID
+					l.CaseTitle = caseTitle
+					custodyLogs = append(custodyLogs, l)
+				}
+			}
+		}
+	}
+
+	logsExport.AllAuditLogs = auditLogs
+	logsExport.TotalAuditLogs = len(auditLogs)
+	logsExport.AllCustodyLogs = custodyLogs
+	logsExport.TotalCustodyLogs = len(custodyLogs)
+
+	// Map logs to individual evidences
+	auditByEvidence := make(map[string][]models.ExportAuditLog)
+	for _, l := range auditLogs {
+		if l.EvidencePublicID != "" {
+			auditByEvidence[l.EvidencePublicID] = append(auditByEvidence[l.EvidencePublicID], l)
+		}
+	}
+
+	custodyByEvidence := make(map[string][]models.ExportCustodyLog)
+	for _, l := range custodyLogs {
+		if l.EvidencePublicID != "" {
+			custodyByEvidence[l.EvidencePublicID] = append(custodyByEvidence[l.EvidencePublicID], l)
+		}
+	}
+
+	for _, ev := range evidenceList {
+		evAudits := auditByEvidence[ev.PublicID]
+		if evAudits == nil {
+			evAudits = []models.ExportAuditLog{}
+		}
+		evCustody := custodyByEvidence[ev.PublicID]
+		if evCustody == nil {
+			evCustody = []models.ExportCustodyLog{}
+		}
+
+		logsExport.Evidences = append(logsExport.Evidences, models.EvidenceLogsItem{
+			EvidencePublicID: ev.PublicID,
+			FileName:         ev.FileName,
+			CurrentHash:      ev.CurrentHash,
+			AuditLogs:        evAudits,
+			CustodyLogs:      evCustody,
+		})
+	}
+
+	return logsExport
 }
